@@ -2,8 +2,8 @@ import { Injectable } from '@angular/core';
 import { BehaviorSubject, Observable } from 'rxjs';
 import { HttpClient } from '@angular/common/http';
 import { WebsocketService } from '../websocket/websoket.service';
-import { WebRTCStreming } from '../websocket/WebRTCStreming';
 import { PCMUUtils } from '../PCMUUtils';
+import { WebRTCStreming } from '../WebRTCStreming';
 
 export interface CallStatus {
   status: string;
@@ -157,7 +157,7 @@ export class TelnyxService {
       // - stream_bidirectional_mode: "rtp" to use RTP.
       // - stream_bidirectional_codec: "PCMU" for μ‑law encoding.
       // - stream_bidirectional_target_legs: "both" to apply on both call legs.
-      // - stream_bidirectional_sampling_rate: "8000" Hz for PCMU.
+      // - stream_bidirectional_sampling_rate: "8500" Hz for PCMU.
       // - send_silence_when_idle: true to keep channel active.
       const payload = {
         stream_url: this.wsUrl_S,
@@ -165,7 +165,7 @@ export class TelnyxService {
         stream_bidirectional_mode: "rtp",
         stream_bidirectional_codec: "PCMU",
         stream_bidirectional_target_legs: "both",
-        stream_bidirectional_sampling_rate: "8000",
+        stream_bidirectional_sampling_rate: "8500",
         send_silence_when_idle: true,
       };
       const response: any = await this.http
@@ -195,7 +195,7 @@ export class TelnyxService {
     }
     try {
       const pcmData = PCMUUtils.decodePCMU(PCMUUtils.base64ToArrayBuffer(base64Data));
-      const audioBuffer = this.audioCtx.createBuffer(1, pcmData.length, 8000);
+      const audioBuffer = this.audioCtx.createBuffer(1, pcmData.length, 8500);
       audioBuffer.getChannelData(0).set(pcmData);
       this.audioQueue.push(audioBuffer);
       this.playAudioQueue();
@@ -222,8 +222,8 @@ export class TelnyxService {
   async startOutboundMic(): Promise<void> {
     try {
       const micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      // Use a dedicated AudioContext with sample rate 8000 Hz.
-      const audioContext = new AudioContext({ sampleRate: 8000 });
+      // Use a dedicated AudioContext with sample rate 8500 Hz.
+      const audioContext = new AudioContext({ sampleRate: 8500 });
       const source = audioContext.createMediaStreamSource(micStream);
       const processor = audioContext.createScriptProcessor(2048, 1, 1);
       source.connect(processor);

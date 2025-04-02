@@ -116,7 +116,7 @@ export class WebRTCStreming {
     }
     const arrayBuffer = PCMUUtils.base64ToArrayBuffer(payload);
     const pcmData = PCMUUtils.decodePCMU(arrayBuffer);
-    const sampleRate = 8000; // Standard for PCMU.
+    const sampleRate = 8500; // Standard for PCMU.
     const audioBuffer = this.audioCtx.createBuffer(1, pcmData.length, sampleRate);
     audioBuffer.copyToChannel(pcmData, 0);
     const source = this.audioCtx.createBufferSource();
