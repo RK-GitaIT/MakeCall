@@ -9,16 +9,14 @@
 
   <!-- Input Fields -->
   <div class="p-4 space-y-4">
-    <!-- From Number (Disabled) -->
     <label class="text-gray-600 font-semibold text-sm">📞 Number From</label>
     <input [(ngModel)]="from" disabled class="w-full border border-gray-300 p-2 rounded-lg bg-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-400" placeholder="From" />
 
-    <!-- To Number -->
     <label class="text-gray-600 font-semibold text-sm">🧭 To</label>
     <input type="tel" name="to" [(ngModel)]="to" inputmode="tel" pattern="^\+?[1-9]\d{1,14}$" (keypress)="validateKey($event)" class="w-full border border-gray-300 p-2 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-400" placeholder="Enter recipient" />
-
+    
     <span class="text-sm text-blue-600">
-        Note: Calls will only be to USA numbers. $0.005 per minute.
+      Note: Calls will only be to USA numbers. $0.005 per minute.
     </span>
   </div>
 
@@ -49,10 +47,8 @@
     </div>
   </div>
 
-  <!-- Hidden audio element for streaming inbound audio -->
+  <!-- Hidden audio element for inbound streaming audio -->
   <audio id="streaming_audio" style="display: none;"></audio>
-
-  <!-- (Optional) Hidden audio element for microphone monitoring -->
+  <!-- Hidden audio element for microphone monitoring -->
   <audio id="mic_audio" controls style="display: none;"></audio>
-
 </div>

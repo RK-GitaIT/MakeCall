@@ -2,13 +2,12 @@ import { Component, OnDestroy, OnInit } from '@angular/core';
 import { TelnyxService } from '../../services/Telnyx/telnyx.service';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
-import { catchError } from 'rxjs';
 
 @Component({
   selector: 'app-dialpad',
   imports: [CommonModule, FormsModule],
   templateUrl: './dialpad.component.html',
-  styleUrl: './dialpad.component.css'
+  styleUrls: ['./dialpad.component.css']
 })
 export class DialpadComponent implements OnInit, OnDestroy {
   to: string = '+';
@@ -28,7 +27,6 @@ export class DialpadComponent implements OnInit, OnDestroy {
     password: ''
   };
 
-  // Audio elements for notifications.
   private callBeepSound = new Audio('assets/callbeep.mp3');
   private errorBeepSound = new Audio('assets/beep.wav');
 
@@ -73,7 +71,6 @@ export class DialpadComponent implements OnInit, OnDestroy {
     }
   }
 
-  // Display a toast message.
   showToast(message: string, type: 'info' | 'success' | 'error' | '') {
     const toast = document.createElement('div');
     toast.className = `fixed bottom-4 right-4 p-3 rounded-lg shadow-lg text-white ${
@@ -84,7 +81,6 @@ export class DialpadComponent implements OnInit, OnDestroy {
     setTimeout(() => document.body.removeChild(toast), 3000);
   }
 
-  // Initiate an outbound call.
   async makeOutboundCall() {
     if (!this.from || !this.to) {
       alert('Please fill all required fields.');
@@ -92,7 +88,6 @@ export class DialpadComponent implements OnInit, OnDestroy {
     }
     try {
       this.isCallStatus = true;
-      // Setup audio stream for incoming call audio.
       const audioElement = document.getElementById('streaming_audio') as HTMLAudioElement;
       if (audioElement) {
         this.telnyxService.setupAudioStream(audioElement);
@@ -114,7 +109,6 @@ export class DialpadComponent implements OnInit, OnDestroy {
     }
   }
 
-  // Validate phone number input.
   validateKey(event: KeyboardEvent) {
     const allowedChars = /^[\d\+]+$/;
     if (!allowedChars.test(event.key)) {
@@ -122,12 +116,10 @@ export class DialpadComponent implements OnInit, OnDestroy {
     }
   }
 
-  // Close the call status modal.
   closeModal() {
     this.isCallStatus = false;
   }
 
-  // Start the call duration timer.
   startCallTimer() {
     let seconds = 0;
     clearInterval(this.timerInterval);
@@ -139,15 +131,12 @@ export class DialpadComponent implements OnInit, OnDestroy {
     }, 1000);
   }
 
-  // Hang up the current call.
   hangup() {
     const currentCall = this.telnyxService.getCurrentCall();
     if (currentCall) {
-      this.telnyxService.hangUp(
-        currentCall.call_control_id
-      );
+      this.telnyxService.hangUp(currentCall.call_control_id);
     } else {
-      console.warn('Missing client_state or command_id for hangup.');
+      console.warn('Missing call control information for hangup.');
     }
     this.isCallStatus = false;
     clearInterval(this.timerInterval);
@@ -164,7 +153,6 @@ export class DialpadComponent implements OnInit, OnDestroy {
         const micAudio = document.getElementById('mic_audio') as HTMLAudioElement;
         if (micAudio) {
           micAudio.srcObject = micStream;
-          // For debugging, you might want to temporarily show the controls
           micAudio.controls = true;
           micAudio.play().catch(err => console.error('Error playing mic stream:', err));
         }
@@ -173,5 +161,4 @@ export class DialpadComponent implements OnInit, OnDestroy {
       console.error('Error starting mic:', err);
     }
   }
-  
 }

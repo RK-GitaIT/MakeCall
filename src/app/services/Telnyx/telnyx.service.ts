@@ -7,7 +7,7 @@ import { WebRTCStreming } from '../websocket/WebRTCStreming';
 export interface CallStatus {
   status: string;
   type: 'info' | 'success' | 'error' | '';
-  message?: string; // Optional message property
+  message?: string;
 }
 
 interface CurrentCallData {
@@ -28,23 +28,23 @@ export class TelnyxService {
   private readonly wsUrl_S = 'wss://gitait.com/telnyx/ws-audio-stream';
   private readonly backendApi = 'https://api.telnyx.com/v2';
 
-  // Storage for TTS text or any message you need later.
   private currentCallMessage = '';
-
   callStatus$ = new BehaviorSubject<CallStatus>({ status: '', type: '' });
   private currentCall: CurrentCallData | null = null;
-
-  // AudioContext for playback.
-  private audioCtx: AudioContext | null = null;
+  // Queue for playing decoded audio chunks (fallback if not using MediaStream).
+  private audioQueue: AudioBuffer[] = [];
+  private isPlaying = false;
+  audioCtx: any;
 
   constructor(
     private http: HttpClient,
     private websocketService: WebsocketService,
     private _webRTCStreming: WebRTCStreming,
   ) {
-    // Subscribe to incoming WebSocket messages.
+    // Subscribe to control messages.
     this.websocketService.message$.subscribe((res: any) => this.handleWebSocketMessage(res));
-    this._webRTCStreming.message$.subscribe((res: any) => this.handelStemingSocket(res));
+    // Subscribe to streaming events.
+    this._webRTCStreming.message$.subscribe((res: any) => this.handleStreamingSocket(res));
   }
 
   // Fetch call control profiles.
@@ -52,7 +52,7 @@ export class TelnyxService {
     return this.http.get(`${this.backendApi}/call_control_applications`);
   }
 
-  // Fetch phone numbers for a given connection.
+  // Fetch phone numbers for a connection.
   getProfilesAssociatedPhonenumbers(id: string): Observable<any> {
     return this.http.get(`${this.backendApi}/phone_numbers?filter[connection_id]=${id}`);
   }
@@ -65,14 +65,11 @@ export class TelnyxService {
       if (!profileDetails?.data) {
         throw new Error('Invalid profile details');
       }
-      // Ensure WebSocket connection is active.
+      // Ensure control WebSocket connection.
       if (!this.websocketService.isConnected()) {
         this.websocketService.connect(this.wsUrl);
       }
-
-      // Save any TTS or additional message.
       this.currentCallMessage = message;
-
       const payload = {
         to: destinationNumber,
         from: callerNumber,
@@ -83,18 +80,9 @@ export class TelnyxService {
         webhook_url: this.webhookUrl,
         webhook_url_method: "POST",
         media_encryption: "disabled",
-        // stream_url: this.wsUrl,  // Used for media streaming.
-        // stream_track: "both_tracks",
-        // stream_bidirectional_mode: "rtp",
-        // stream_bidirectional_codec: "PCMU",
-        // stream_bidirectional_target_legs: "both",
-        // stream_bidirectional_sampling_rate: "16000",
-        // send_silence_when_idle: true,
       };
-
       this.callStatus$.next({ status: 'Call Initiated', type: 'success' });
       const response: any = await this.http.post(`${this.backendApi}/calls`, payload).toPromise();
-
       if (response?.data?.call_control_id) {
         this.currentCall = {
           connection_id: connectionId,
@@ -115,26 +103,15 @@ export class TelnyxService {
   }
 
   private handleWebSocketMessage(res: any) {
-    console.log("WebSocket Message:", res);
-    if (!res?.data) {
-      return;
-    }
+    if (!res?.data) return;
     const { event_type, payload } = res.data;
-    console.log(`WebSocket Event: ${event_type}`);
-  
     switch (event_type) {
       case 'call.initiated':
         this.callStatus$.next({ status: 'Call Initiated', type: 'info' });
         break;
       case 'call.answered':
-        this.callStatus$.next({ status: 'Call Answered', type: 'success' });
-        setTimeout(() => {
-          this.hangUp(payload.call_control_id);
-        }, 120000); 
-        if (!this._webRTCStreming.isConnected()) {
-          this._webRTCStreming.connect(this.wsUrl_S);
-        }
-        this.streamingStart(payload.call_control_id, payload.client_state, payload.command_id);
+        this.handleCallAnswered(payload);
+        setTimeout(() => this.hangUp(payload.call_control_id), 120000);
         break;
       case 'call.hangup':
         this.callStatus$.next({ status: 'Call Ended', type: 'success' });
@@ -155,74 +132,94 @@ export class TelnyxService {
     }
   }
 
-  private handelStemingSocket(res: any) {
-      console.log("WebRTC Streaming Message:", res);
-        // Use our custom method to process base64 RTP messages.
-        this.startAudioStream(res.payload.stream_url);
+  private handleCallAnswered(payload: any) {
+    this.callStatus$.next({ status: 'Call Answered', type: 'success' });
+    // Start the audio streaming WebSocket if not already connected.
+    if (!this._webRTCStreming.isConnected()) {
+      this._webRTCStreming.connect(this.wsUrl_S);
+    }
+    this.currentCall = {
+      call_control_id: payload.call_control_id,
+      client_state: payload.client_state,
+      call_session_id: payload.call_session_id,
+      call_leg_id: payload.call_leg_id
+    };
+    this.streamingStart(payload.call_control_id, payload.client_state, payload.command_id);
+    setTimeout(() => this.hangUp(payload.call_control_id), 120000);
   }
-  /**
-   * Updated startAudioStream:
-   * Opens a WebSocket connection to receive JSON payloads that wrap a base64-encoded RTP payload.
-   * The RTP payload is assumed to be PCMU (u-law). This function decodes the payload,
-   * converts it to PCM samples, and plays it via the Web Audio API.
-   */
-  private startAudioStream(streamUrl: string) {
-    console.log('Starting audio stream via WebSocket with URL:', streamUrl);
+
+  async streamingStart(call_control_id: string, client_state: string, command_id: string): Promise<void> {
+    try {
+      const payload = {
+        stream_url: this.wsUrl_S,
+        stream_track: "both_tracks",                    // Use both inbound and outbound audio tracks.
+        stream_bidirectional_mode: "rtp",                // Use RTP for streaming audio.
+        stream_bidirectional_codec: "PCMU",              // Encode audio using PCMU (μ-law).
+        stream_bidirectional_target_legs: "both",        // Target both call legs.
+        stream_bidirectional_sampling_rate: "16000",     // Sampling rate of 16000 Hz.
+        send_silence_when_idle: true,                    // Keep channel active during silence.
+      };
+      const response: any = await this.http
+        .post(`${this.backendApi}/calls/${call_control_id}/actions/streaming_start`, payload)
+        .toPromise();
+      console.log("Streaming started successfully:", response);
+    } catch (error) {
+      console.error("Error starting streaming:", error);
+      this.handleCallError(error);
+    }
+  }
   
-    // Initialize AudioContext if not already created.
+
+  // Handle media events coming from the streaming socket.
+  private handleStreamingSocket(res: any) {
+   // console.log("Streaming Socket Message:", res);
+    if (res.event === 'media') {
+      const { track, payload } = res.media;
+      if (track === 'inbound') {
+        this.processInboundAudio(payload);
+      }
+    }
+  }
+
+  // Fallback method if you want to queue and play inbound audio manually.
+  private processInboundAudio(base64Data: string) {
     if (!this.audioCtx) {
       this.audioCtx = new AudioContext();
     }
-    const audioCtx = this.audioCtx;
-  
-    // Open a WebSocket to receive media streaming messages.
-    const mediaSocket = new WebSocket(streamUrl);
-    mediaSocket.onopen = () => {
-      console.log('Media WebSocket connected.');
-    };
-  
-    mediaSocket.onerror = (err) => {
-      console.error('Media WebSocket error:', err);
-      this.callStatus$.next({ status: 'Streaming Error', type: 'error', message: 'Media socket error' });
-    };
-  
-    mediaSocket.onmessage = (event: MessageEvent) => {
-      // Expect messages as JSON containing a base64-encoded WAV payload.
-      try {
-        const msg = JSON.parse(event.data);
-        if (msg.payload && msg.payload.rtp_payload) {
-          const base64Data = msg.payload.rtp_payload;
-          // Decode the base64 string into binary data.
-          const binaryStr = atob(base64Data);
-          const buffer = new Uint8Array(binaryStr.length);
-          for (let i = 0; i < binaryStr.length; i++) {
-            buffer[i] = binaryStr.charCodeAt(i);
-          }
-          // Decode the WAV data using AudioContext.
-          audioCtx.decodeAudioData(buffer.buffer)
-            .then((decodedData) => {
-              const source = audioCtx.createBufferSource();
-              source.buffer = decodedData;
-              source.connect(audioCtx.destination);
-              source.start();
-            })
-            .catch((err) => {
-              console.error('Error decoding WAV data:', err);
-            });
-        } else {
-          console.warn("Received message without rtp_payload, ignoring.");
-        }
-      } catch (err) {
-        console.error("Error processing media message:", err);
-      }
-    };
-  }  
+    try {
+      const pcmData = this.decodePCMU(this.base64ToArrayBuffer(base64Data));
+      const audioBuffer = this.audioCtx.createBuffer(1, pcmData.length, 8000);
+      audioBuffer.getChannelData(0).set(pcmData);
+      this.audioQueue.push(audioBuffer);
+      this.playAudioQueue();
+    } catch (error) {
+      console.error('Audio processing error:', error);
+    }
+  }
 
-  /**
-   * Decodes PCMU (u-law) data to PCM float samples.
-   * @param buffer An ArrayBuffer containing PCMU audio data.
-   * @returns A Float32Array of linear PCM samples.
-   */
+  private async playAudioQueue() {
+    if (this.isPlaying || !this.audioCtx || this.audioQueue.length === 0) return;
+    this.isPlaying = true;
+    const audioBuffer = this.audioQueue.shift()!;
+    const source = this.audioCtx.createBufferSource();
+    source.buffer = audioBuffer;
+    source.connect(this.audioCtx.destination);
+    source.onended = () => {
+      this.isPlaying = false;
+      this.playAudioQueue();
+    };
+    source.start();
+  }
+
+  // PCMU decoding helpers (same as in WebRTCStreming).
+  private base64ToArrayBuffer(base64: string): ArrayBuffer {
+    const binaryStr = atob(base64);
+    const bytes = new Uint8Array(binaryStr.length);
+    for (let i = 0; i < binaryStr.length; i++) {
+      bytes[i] = binaryStr.charCodeAt(i);
+    }
+    return bytes.buffer;
+  }
   private decodePCMU(buffer: ArrayBuffer): Float32Array {
     const uLawData = new Uint8Array(buffer);
     const pcmSamples = new Float32Array(uLawData.length);
@@ -231,80 +228,45 @@ export class TelnyxService {
     }
     return pcmSamples;
   }
-
-  /**
-   * Converts an 8-bit u-law sample to linear PCM.
-   * This implementation follows the standard u-law conversion.
-   * @param u_val An 8-bit unsigned integer sample.
-   * @returns A linear PCM sample.
-   */
   private ulawToLinear(u_val: number): number {
-    // Invert all bits.
     u_val = ~u_val & 0xFF;
-    const sign = (u_val & 0x80) ? -1 : 1;
-    const exponent = (u_val >> 4) & 0x07;
-    const mantissa = u_val & 0x0F;
-    const magnitude = ((mantissa << 1) + 33) << exponent;
-    return sign * (magnitude - 33);
+    const t = (((u_val & 0x0F) << 3) + 0x84) << ((u_val >> 4) & 0x07);
+    return (u_val & 0x80) ? (0x84 - t) : (t - 0x84);
   }
 
-  // Send a hangup command.
+  private cleanupAudio() {
+    if (this.audioCtx) {
+      this.audioCtx.close().then(() => {
+        this.audioCtx = null;
+        this.audioQueue = [];
+        this.isPlaying = false;
+      });
+    }
+  }
+
   async hangUp(call_control_id: string): Promise<void> {
     try {
-      const response: any = await this.http.post(`${this.backendApi}/calls/${call_control_id}/actions/hangup`, {}).toPromise();
-      console.log("Call hung up successfully:", response);
+      await this.http.post(`${this.backendApi}/calls/${call_control_id}/actions/hangup`, {}).toPromise();
+      this.cleanupAudio();
+      this.callStatus$.next({ status: 'Call Ended', type: 'success' });
     } catch (error) {
-      console.error("Error hanging up call:", error);
       this.handleCallError(error);
     }
   }
 
-  // Send a streaming start command.
-  async streamingStart(call_control_id: string, client_state: string, command_id: string): Promise<void> {
-    try {
-      const payload = {
-        stream_url: this.wsUrl_S,
-        stream_track: "both_tracks",
-        stream_bidirectional_mode: "rtp",
-        stream_bidirectional_codec: "PCMU",
-        stream_bidirectional_target_legs: "both",
-        stream_bidirectional_sampling_rate: "16000",
-        send_silence_when_idle: true,
-      };
-      const response: any = await this.http.post(`${this.backendApi}/calls/${call_control_id}/actions/streaming_start`, payload).toPromise();
-      console.log("Streaming started successfully:", response);
-    } catch (error) {
-      console.error("Error starting streaming:", error);
-      this.handleCallError(error);
-    }
-  }
-
-  // Set up inbound audio playback using MediaSource (if needed).
-  setupAudioStream(audioElement: HTMLAudioElement): void {
-    // Implementation omitted for brevity.
-  }
-  
-  // Start capturing microphone input.
-  async startMicCapture(): Promise<MediaStream | null> {
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
-      console.log("Microphone capture started.");
-      return stream;
-    } catch (error) {
-      console.error("Error accessing microphone:", error);
-      return null;
-    }
-  }
-  
-  // Handle errors: log error, play beep sound, update status, disconnect WebSocket.
   private handleCallError(error: any) {
-    console.error('Call Failed:', error.message || error);
+    console.error('Error:', error);
+    this.cleanupAudio();
+    this.callStatus$.next({ 
+      status: 'Error', 
+      type: 'error',
+      message: error.message || 'Unknown error occurred'
+    });
     this.playBeepSound();
-    this.callStatus$.next({ status: 'Call Failed', type: 'error' });
     this.websocketService.disconnect();
   }
   
-  // Play an error beep.
+  // Play a beep on error.
   private playBeepSound() {
     const beep = new Audio('assets/beep.mp3');
     beep.play().catch(err => console.error('Error playing beep sound:', err));
@@ -317,12 +279,34 @@ export class TelnyxService {
     console.log("Call has ended.");
   }
   
-  // Retrieve current call data from session storage.
+  // Retrieve current call data.
   getCurrentCall(): CurrentCallData | null {
     const stored = sessionStorage.getItem('call_control_id');
     if (stored) {
       this.currentCall = JSON.parse(stored);
     }
     return this.currentCall;
+  }
+
+  // Setup the remote stream on an audio element.
+  setupAudioStream(audioElement: HTMLAudioElement) {
+    const remoteStream = this._webRTCStreming.getRemoteStream && this._webRTCStreming.getRemoteStream();
+    if (remoteStream) {
+      audioElement.srcObject = remoteStream;
+      audioElement.play().catch(err => console.error('Error playing audio stream:', err));
+    } else {
+      console.warn('No remote stream available for audio streaming.');
+    }
+  }
+
+  // Start microphone capture.
+  async startMicCapture(): Promise<MediaStream> {
+    try {
+      const micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      return micStream;
+    } catch (err) {
+      console.error('Error capturing microphone:', err);
+      throw err;
+    }
   }
 }
