@@ -4,7 +4,7 @@ import { Observable } from 'rxjs';
 
 export const AuthInterceptor: HttpInterceptorFn = (req: HttpRequest<any>, next: HttpHandlerFn): Observable<any> => {
   
-  var token = "KEY0195C6E44671A1C04210810DEA9BB5EC_gTeATcx1xH9PzlTlntNTjc";
+  var token = "KEY0195F0EA74752211FFA4ADE9B852E3BF_u2cbFgEQQmA93mlbYlG5e1";
 
   const clonedReq = req.clone({
     setHeaders: {

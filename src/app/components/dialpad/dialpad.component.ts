@@ -142,11 +142,9 @@ export class DialpadComponent implements OnInit, OnDestroy {
   // Hang up the current call.
   hangup() {
     const currentCall = this.telnyxService.getCurrentCall();
-    if (currentCall && currentCall.client_state) {
+    if (currentCall) {
       this.telnyxService.hangUp(
-        currentCall.call_control_id,
-        currentCall.client_state,
-        currentCall.command_id || ''
+        currentCall.call_control_id
       );
     } else {
       console.warn('Missing client_state or command_id for hangup.');
@@ -155,20 +153,25 @@ export class DialpadComponent implements OnInit, OnDestroy {
     clearInterval(this.timerInterval);
     this.callDuration = '00:00';
     this.errorBeepSound.currentTime = 0;
-    this.callBeepSound.play();
     console.log('Call ended');
     this.closeModal();
   }
 
-  // (Optional) Start microphone capture for local monitoring or sending to Telnyx.
   async startMic() {
-    const micStream = await this.telnyxService.startMicCapture();
-    if (micStream) {
-      const micAudio = document.getElementById('mic_audio') as HTMLAudioElement;
-      if (micAudio) {
-        micAudio.srcObject = micStream;
-        micAudio.play().catch(err => console.error('Error playing mic stream:', err));
+    try {
+      const micStream = await this.telnyxService.startMicCapture();
+      if (micStream) {
+        const micAudio = document.getElementById('mic_audio') as HTMLAudioElement;
+        if (micAudio) {
+          micAudio.srcObject = micStream;
+          // For debugging, you might want to temporarily show the controls
+          micAudio.controls = true;
+          micAudio.play().catch(err => console.error('Error playing mic stream:', err));
+        }
       }
+    } catch (err) {
+      console.error('Error starting mic:', err);
     }
-  }  
+  }
+  
 }
