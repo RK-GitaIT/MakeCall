@@ -1,5 +1,6 @@
 import { Injectable } from '@angular/core';
 import { Observable, Subject } from 'rxjs';
+import { PCMUUtils } from './PCMUUtils';
 
 @Injectable({
   providedIn: 'root'
@@ -7,26 +8,25 @@ import { Observable, Subject } from 'rxjs';
 export class WebRTCStreming {
   private socket: WebSocket | null = null;
   private messageSubject = new Subject<any>();
-  // Create an AudioContext and a MediaStreamDestination to build our remote stream.
+  // AudioContext and MediaStreamDestination for inbound audio.
   private audioCtx: AudioContext | null = null;
   private remoteStreamDestination: MediaStreamAudioDestinationNode | null = null;
   private remoteStream: MediaStream | null = null;
 
-  // Expose an observable for incoming WebSocket messages.
+  // Expose observable messages.
   get message$(): Observable<any> {
     return this.messageSubject.asObservable();
   }
 
-  // Connect to the WebSocket and initialize audio context/destination.
+  // Connect to the streaming WebSocket and initialize audio.
   connect(url: string): void {
     if (this.socket) {
       this.disconnect();
     }
-
     console.log(`Connecting to WebSocket: ${url}`);
     this.socket = new WebSocket(url);
 
-    // Initialize AudioContext and create destination node.
+    // Initialize AudioContext and destination.
     this.audioCtx = new AudioContext();
     this.remoteStreamDestination = this.audioCtx.createMediaStreamDestination();
     this.remoteStream = this.remoteStreamDestination.stream;
@@ -38,7 +38,7 @@ export class WebRTCStreming {
     this.socket.onmessage = (event) => {
       try {
         const data = JSON.parse(event.data);
-        if(data.event === 'media') {
+        if (data.event === 'media') {
           this.handleMediaEvent(data);
           this.messageSubject.next(data);
         }
@@ -57,7 +57,7 @@ export class WebRTCStreming {
     };
   }
 
-  // Disconnect the WebSocket and close the AudioContext.
+  // Disconnect and close audio.
   disconnect(): void {
     if (this.socket) {
       if (this.socket.readyState === WebSocket.OPEN || this.socket.readyState === WebSocket.CONNECTING) {
@@ -68,7 +68,6 @@ export class WebRTCStreming {
     } else {
       console.log('No active WebSocket connection to disconnect.');
     }
-
     if (this.audioCtx) {
       this.audioCtx.close().catch(err => console.error('Error closing AudioContext:', err));
       this.audioCtx = null;
@@ -77,17 +76,17 @@ export class WebRTCStreming {
     }
   }
 
-  // Check if the WebSocket is connected.
+  // Check if connected.
   isConnected(): boolean {
     return this.socket !== null && this.socket.readyState === WebSocket.OPEN;
   }
 
-  // Expose the remote MediaStream.
+  // Get the remote MediaStream.
   getRemoteStream(): MediaStream | null {
     return this.remoteStream;
   }
 
-  // Send outbound data (for example, captured mic audio) via WebSocket.
+  // Send outbound audio or data via WebSocket.
   sendOutboundAudio(data: any): void {
     if (this.socket && this.socket.readyState === WebSocket.OPEN) {
       try {
@@ -100,15 +99,13 @@ export class WebRTCStreming {
     }
   }
 
-  // Handle media events from the socket.
+  // Handle incoming media events.
   private handleMediaEvent(data: any): void {
     console.log('Received media event:', data);
     const { track, payload } = data.media;
     if (track === 'inbound') {
-      // Decode and play inbound PCMU audio.
       this.processInboundAudio(payload);
     }
-    // Outbound handling can be added if required.
   }
 
   // Process inbound PCMU audio payload.
@@ -117,53 +114,15 @@ export class WebRTCStreming {
       console.warn('Audio context or destination not initialized.');
       return;
     }
-    // Convert base64 payload to ArrayBuffer.
-    const arrayBuffer = this.base64ToArrayBuffer(payload);
-    // Manually decode PCMU data.
-    const pcmData = this.decodePCMU(arrayBuffer);
-    const sampleRate = 8000; // Adjust this if needed.
+    const arrayBuffer = PCMUUtils.base64ToArrayBuffer(payload);
+    const pcmData = PCMUUtils.decodePCMU(arrayBuffer);
+    const sampleRate = 8000; // Standard for PCMU.
     const audioBuffer = this.audioCtx.createBuffer(1, pcmData.length, sampleRate);
     audioBuffer.copyToChannel(pcmData, 0);
     const source = this.audioCtx.createBufferSource();
     source.buffer = audioBuffer;
-    // Connect to the destination so that the audio becomes part of remoteStream.
+    // Connect to destination so it appears in the remote stream.
     source.connect(this.remoteStreamDestination);
     source.start();
   }
-
-  // Helper to convert base64 string to ArrayBuffer.
-  private base64ToArrayBuffer(base64: string): ArrayBuffer {
-    const binaryStr = atob(base64);
-    const len = binaryStr.length;
-    const bytes = new Uint8Array(len);
-    for (let i = 0; i < len; i++) {
-      bytes[i] = binaryStr.charCodeAt(i);
-    }
-    return bytes.buffer;
-  }
-
-  // Custom PCMU (μ-law) decoding.
-  private decodePCMU(buffer: ArrayBuffer): Float32Array {
-    const uLawData = new Uint8Array(buffer);
-    const pcmSamples = new Float32Array(uLawData.length);
-    for (let i = 0; i < uLawData.length; i++) {
-      pcmSamples[i] = this.ulawToLinear(uLawData[i]) / 32768;
-    }
-    return pcmSamples;
-  }
-
-  // Standard μ-law to linear conversion.
-// Standard ITU-T G.711 μ-law decoding.
-private ulawToLinear(u_val: number): number {
-  // Complement to obtain original value.
-  u_val = ~u_val & 0xFF;
-  const sign = (u_val & 0x80) ? -1 : 1;
-  const exponent = (u_val >> 4) & 0x07;
-  const mantissa = u_val & 0x0F;
-  // Decode as per ITU-T G.711:
-  // linear = sign * [((mantissa << 1) + 33) << exponent] - 33
-  const sample = (((mantissa << 1) + 33) << exponent) - 33;
-  return sign * sample;
-}
-
 }
