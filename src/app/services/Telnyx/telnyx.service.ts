@@ -2,8 +2,9 @@ import { Injectable } from '@angular/core';
 import { BehaviorSubject, Observable } from 'rxjs';
 import { HttpClient } from '@angular/common/http';
 import { WebsocketService } from '../websocket/websoket.service';
-import { PCMUUtils } from '../PCMUUtils';
 import { WebRTCStreming } from '../WebRTCStreming';
+import { VoiceConfig } from '../VoiceConfig';
+import { OPUSUtils } from '../OPUSUtils';
 
 export interface CallStatus {
   status: string;
@@ -151,21 +152,13 @@ export class TelnyxService {
 
   async streamingStart(call_control_id: string, client_state: string, command_id: string): Promise<void> {
     try {
-      // Streaming payload:
-      // - stream_url: URL for media stream.
-      // - stream_track: "both_tracks" for bidirectional audio.
-      // - stream_bidirectional_mode: "rtp" to use RTP.
-      // - stream_bidirectional_codec: "PCMU" for μ‑law encoding.
-      // - stream_bidirectional_target_legs: "both" to apply on both call legs.
-      // - stream_bidirectional_sampling_rate: "8500" Hz for PCMU.
-      // - send_silence_when_idle: true to keep channel active.
       const payload = {
         stream_url: this.wsUrl_S,
         stream_track: "both_tracks",
         stream_bidirectional_mode: "rtp",
-        stream_bidirectional_codec: "PCMU",
+        stream_bidirectional_codec: "OPUS",
         stream_bidirectional_target_legs: "both",
-        stream_bidirectional_sampling_rate: "8500",
+        stream_bidirectional_sampling_rate: VoiceConfig.outboundMic.sampleRate,
         send_silence_when_idle: true,
       };
       const response: any = await this.http
@@ -194,7 +187,7 @@ export class TelnyxService {
       this.audioCtx = new AudioContext();
     }
     try {
-      const pcmData = PCMUUtils.decodePCMU(PCMUUtils.base64ToArrayBuffer(base64Data));
+      const pcmData = OPUSUtils.decode(OPUSUtils.base64ToArrayBuffer(base64Data));
       const audioBuffer = this.audioCtx.createBuffer(1, pcmData.length, 8500);
       audioBuffer.getChannelData(0).set(pcmData);
       this.audioQueue.push(audioBuffer);
@@ -218,20 +211,29 @@ export class TelnyxService {
     source.start();
   }
 
-  // Outbound microphone capture: encode mic audio to PCMU and send it.
   async startOutboundMic(): Promise<void> {
     try {
-      const micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      // Use a dedicated AudioContext with sample rate 8500 Hz.
-      const audioContext = new AudioContext({ sampleRate: 8500 });
+      const micStream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          sampleRate: VoiceConfig.outboundMic.sampleRate,
+          noiseSuppression: VoiceConfig.outboundMic.noiseSuppression,
+          echoCancellation: VoiceConfig.outboundMic.echoCancellation,
+          autoGainControl: VoiceConfig.outboundMic.autoGainControl
+        }
+      });
+      // Use a dedicated AudioContext for outbound audio.
+      const audioContext = new AudioContext({ sampleRate: VoiceConfig.outboundMic.sampleRate });
       const source = audioContext.createMediaStreamSource(micStream);
-      const processor = audioContext.createScriptProcessor(2048, 1, 1);
+      const processor = audioContext.createScriptProcessor(VoiceConfig.outboundMic.bufferSize, 1, 1);
       source.connect(processor);
-      processor.connect(audioContext.destination); // Optional: for local monitoring.
+      processor.connect(audioContext.destination); // Optional: local monitoring.
+
       processor.onaudioprocess = (event) => {
         const inputData = event.inputBuffer.getChannelData(0);
-        const encoded = PCMUUtils.encodePCMU(inputData);
-        const base64Payload = PCMUUtils.arrayBufferToBase64(encoded.buffer);
+        // Normalize the audio to avoid distortion.
+        const normalizedData = this.normalizeAudio(inputData);
+        const encoded = OPUSUtils.encode(normalizedData);
+        const base64Payload = OPUSUtils.arrayBufferToBase64(encoded.buffer);
         // Send outbound audio via the streaming WebSocket.
         this._webRTCStreming.sendOutboundAudio({
           event: "media",
@@ -241,12 +243,12 @@ export class TelnyxService {
           }
         });
       };
+
       console.log('Outbound microphone capture started.');
     } catch (err) {
       console.error('Error capturing outbound mic audio:', err);
     }
   }
-
   async hangUp(call_control_id: string): Promise<void> {
     try {
       await this.http.post(`${this.backendApi}/calls/${call_control_id}/actions/hangup`, {}).toPromise();
@@ -256,6 +258,21 @@ export class TelnyxService {
       this.handleCallError(error);
     }
   }
+
+  private normalizeAudio(input: Float32Array): Float32Array {
+    const output = new Float32Array(input.length);
+    let sum = 0;
+    for (let i = 0; i < input.length; i++) {
+      sum += input[i] * input[i];
+    }
+    const rms = Math.sqrt(sum / input.length);
+    const gain = rms > 0 ? 0.8 / rms : 1;
+    for (let i = 0; i < input.length; i++) {
+      output[i] = input[i] * gain;
+    }
+    return output;
+  }
+
 
   // Cleanup audio: close AudioContext and reset state.
   private cleanupAudio() {

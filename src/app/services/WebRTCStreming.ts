@@ -1,6 +1,7 @@
 import { Injectable } from '@angular/core';
 import { Observable, Subject } from 'rxjs';
-import { PCMUUtils } from './PCMUUtils';
+import { VoiceConfig } from './VoiceConfig';
+import { OPUSUtils } from './OPUSUtils';
 
 @Injectable({
   providedIn: 'root'
@@ -8,7 +9,6 @@ import { PCMUUtils } from './PCMUUtils';
 export class WebRTCStreming {
   private socket: WebSocket | null = null;
   private messageSubject = new Subject<any>();
-  // AudioContext and MediaStreamDestination for inbound audio.
   private audioCtx: AudioContext | null = null;
   private remoteStreamDestination: MediaStreamAudioDestinationNode | null = null;
   private remoteStream: MediaStream | null = null;
@@ -26,8 +26,8 @@ export class WebRTCStreming {
     console.log(`Connecting to WebSocket: ${url}`);
     this.socket = new WebSocket(url);
 
-    // Initialize AudioContext and destination.
-    this.audioCtx = new AudioContext();
+    // Initialize AudioContext with our configured sample rate.
+    this.audioCtx = new AudioContext({ sampleRate: VoiceConfig.audioContextSampleRate });
     this.remoteStreamDestination = this.audioCtx.createMediaStreamDestination();
     this.remoteStream = this.remoteStreamDestination.stream;
 
@@ -57,7 +57,7 @@ export class WebRTCStreming {
     };
   }
 
-  // Disconnect and close audio.
+  // Disconnect and clean up.
   disconnect(): void {
     if (this.socket) {
       if (this.socket.readyState === WebSocket.OPEN || this.socket.readyState === WebSocket.CONNECTING) {
@@ -81,7 +81,7 @@ export class WebRTCStreming {
     return this.socket !== null && this.socket.readyState === WebSocket.OPEN;
   }
 
-  // Get the remote MediaStream.
+  // Return the remote MediaStream.
   getRemoteStream(): MediaStream | null {
     return this.remoteStream;
   }
@@ -108,20 +108,27 @@ export class WebRTCStreming {
     }
   }
 
-  // Process inbound PCMU audio payload.
-  private processInboundAudio(payload: string): void {
+  // Process inbound audio payload.
+  private async processInboundAudio(payload: string): Promise<void> {
     if (!this.audioCtx || !this.remoteStreamDestination) {
       console.warn('Audio context or destination not initialized.');
       return;
     }
-    const arrayBuffer = PCMUUtils.base64ToArrayBuffer(payload);
-    const pcmData = PCMUUtils.decodePCMU(arrayBuffer);
-    const sampleRate = 8500; // Standard for PCMU.
-    const audioBuffer = this.audioCtx.createBuffer(1, pcmData.length, sampleRate);
+    // Ensure the AudioContext is active.
+    if (this.audioCtx.state === 'suspended') {
+      await this.audioCtx.resume();
+    }
+    // Decode the base64 payload.
+    const arrayBuffer = OPUSUtils.base64ToArrayBuffer(payload);
+    const pcmData = OPUSUtils.decode(arrayBuffer);
+    // Create an AudioBuffer using the intended sample rate.
+    const audioBuffer = this.audioCtx.createBuffer(1, pcmData.length, VoiceConfig.intendedSampleRate);
     audioBuffer.copyToChannel(pcmData, 0);
+
     const source = this.audioCtx.createBufferSource();
     source.buffer = audioBuffer;
-    // Connect to destination so it appears in the remote stream.
+    // Adjust playback rate automatically.
+    source.playbackRate.value = VoiceConfig.getPlaybackRateAdjustment(this.audioCtx.sampleRate);
     source.connect(this.remoteStreamDestination);
     source.start();
   }
