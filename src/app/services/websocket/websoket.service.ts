@@ -8,12 +8,12 @@ export class WebsocketService {
   private socket: WebSocket | null = null;
   private messageSubject = new Subject<any>();
 
-  // Expose an observable to subscribe for incoming WebSocket messages
+  // Expose an observable to subscribe for incoming WebSocket messages.
   get message$(): Observable<any> {
     return this.messageSubject.asObservable();
   }
 
-  // Connect to the WebSocket using the provided URL
+  // Connect to the WebSocket using the provided URL.
   connect(url: string): void {
     if (this.socket) {
       this.disconnect();
@@ -45,7 +45,7 @@ export class WebsocketService {
     };
   }
 
-  // Disconnect the WebSocket
+  // Disconnect the WebSocket.
   disconnect(): void {
     if (this.socket) {
       if (this.socket.readyState === WebSocket.OPEN || this.socket.readyState === WebSocket.CONNECTING) {
@@ -60,8 +60,23 @@ export class WebsocketService {
     }
   }
 
-  // ✅ Check if WebSocket is connected
+  // ✅ Check if WebSocket is connected.
   isConnected(): boolean {
     return this.socket !== null && this.socket.readyState === WebSocket.OPEN;
+  }
+
+  // Check if connected to a specific URL.
+  isConnectedTo(url: string): boolean {
+    return this.isConnected() && this.socket!.url === url;
+  }
+
+  // Send a message via the WebSocket.
+  sendMessage(message: string): void {
+    if (this.isConnected() && this.socket) {
+      this.socket.send(message);
+      console.log('Message sent:', message);
+    } else {
+      console.error('Cannot send message, WebSocket is not connected.');
+    }
   }
 }

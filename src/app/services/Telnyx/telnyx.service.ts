@@ -1,5 +1,5 @@
 import { Injectable } from '@angular/core';
-import { BehaviorSubject, Observable } from 'rxjs';
+import { BehaviorSubject, firstValueFrom, Observable } from 'rxjs';
 import { HttpClient } from '@angular/common/http';
 import { WebsocketService } from '../websocket/websoket.service';
 import { WebRTCStreming } from '../WebRTCStreming';
@@ -19,6 +19,8 @@ interface CurrentCallData {
   call_session_id: string;
   call_leg_id: string;
   command_id?: string;
+  inbound_stream_id?: string;
+  outbound_stream_id?: string;
 }
 
 @Injectable({
@@ -27,7 +29,8 @@ interface CurrentCallData {
 export class TelnyxService {
   private readonly webhookUrl = 'https://gitait.com/telnyx/api/webhook';
   private readonly wsUrl = 'wss://gitait.com/telnyx/ws';
-  private readonly wsUrl_S = 'wss://gitait.com/telnyx/ws-audio-stream';
+  private readonly wsUrl_inbound = 'wss://gitait.com/telnyx/ws-audio-stream-inbound';  
+  private readonly wsUrl_outbound = 'wss://gitait.com/telnyx/ws-audio-stream-outbound';
   private readonly backendApi = 'https://api.telnyx.com/v2';
 
   private currentCallMessage = '';
@@ -138,7 +141,7 @@ export class TelnyxService {
     this.callStatus$.next({ status: 'Call Answered', type: 'success' });
     // Start streaming WebSocket if not connected.
     if (!this._webRTCStreming.isConnected()) {
-      this._webRTCStreming.connect(this.wsUrl_S);
+      this._webRTCStreming.connect(this.wsUrl_inbound);
     }
     this.currentCall = {
       call_control_id: payload.call_control_id,
@@ -146,18 +149,40 @@ export class TelnyxService {
       call_session_id: payload.call_session_id,
       call_leg_id: payload.call_leg_id
     };
-    this.streamingStart(payload.call_control_id, payload.client_state, payload.command_id);
+    this.inboundStreamingStart(payload.call_control_id, payload.client_state, payload.command_id);
+    this.startCallRecording(payload.call_control_id).catch(err => console.error('Error starting call recording:', err));
     setTimeout(() => this.hangUp(payload.call_control_id), 120000);
   }
 
-  async streamingStart(call_control_id: string, client_state: string, command_id: string): Promise<void> {
+  async inboundStreamingStart(call_control_id: string, client_state: string, command_id: string): Promise<void> {
     try {
       const payload = {
-        stream_url: this.wsUrl_S,
-        stream_track: "both_tracks",
+        stream_url: this.wsUrl_inbound,
+        stream_track: "inbound_track",
         stream_bidirectional_mode: "rtp",
         stream_bidirectional_codec: "OPUS",
-        stream_bidirectional_target_legs: "both",
+       // stream_bidirectional_target_legs: "both",
+        stream_bidirectional_sampling_rate: VoiceConfig.outboundMic.sampleRate,
+        send_silence_when_idle: true,
+      };
+      const response: any = await this.http
+        .post(`${this.backendApi}/calls/${call_control_id}/actions/streaming_start`, payload)
+        .toPromise();
+      console.log("Streaming started successfully:", response);
+    } catch (error) {
+      console.error("Error starting streaming:", error);
+      this.handleCallError(error);
+    }
+  }
+
+  async outboundStreamingStart(call_control_id: string, client_state: string, command_id: string): Promise<void> {
+    try {
+      const payload = {
+        stream_url: this.wsUrl_outbound,
+        stream_track: "outbound_track",
+        stream_bidirectional_mode: "rtp",
+        stream_bidirectional_codec: "OPUS",
+        //stream_bidirectional_target_legs: "none",
         stream_bidirectional_sampling_rate: VoiceConfig.outboundMic.sampleRate,
         send_silence_when_idle: true,
       };
@@ -210,7 +235,9 @@ export class TelnyxService {
     };
     source.start();
   }
-
+  private outboundSequenceNumber = 0;
+  private outboundChunkNumber = 0; 
+  
   async startOutboundMic(): Promise<void> {
     try {
       const micStream = await navigator.mediaDevices.getUserMedia({
@@ -221,34 +248,56 @@ export class TelnyxService {
           autoGainControl: VoiceConfig.outboundMic.autoGainControl
         }
       });
+  
       // Use a dedicated AudioContext for outbound audio.
       const audioContext = new AudioContext({ sampleRate: VoiceConfig.outboundMic.sampleRate });
       const source = audioContext.createMediaStreamSource(micStream);
       const processor = audioContext.createScriptProcessor(VoiceConfig.outboundMic.bufferSize, 1, 1);
       source.connect(processor);
       processor.connect(audioContext.destination); // Optional: local monitoring.
-
+  
+      // Reset chunk counter for a new stream.
+      this.outboundChunkNumber = 0;
+  
+      // Ensure WebSocket connection.
+      if (!this.websocketService.isConnectedTo(this.wsUrl_outbound)) {
+        this.websocketService.connect(this.wsUrl_outbound);
+      }
+  
       processor.onaudioprocess = (event) => {
         const inputData = event.inputBuffer.getChannelData(0);
-        // Normalize the audio to avoid distortion.
         const normalizedData = this.normalizeAudio(inputData);
         const encoded = OPUSUtils.encode(normalizedData);
         const base64Payload = OPUSUtils.arrayBufferToBase64(encoded.buffer);
-        // Send outbound audio via the streaming WebSocket.
-        this._webRTCStreming.sendOutboundAudio({
+  
+        // Increment sequence and chunk numbers.
+        this.outboundSequenceNumber++;
+        this.outboundChunkNumber++;
+  
+        // Construct the outbound message.
+        const outboundMessage = {
+          stream_id: this.currentCall?.call_control_id,
           event: "media",
           media: {
-            track: "outbound",
-            payload: base64Payload
-          }
-        });
+            timestamp: Date.now().toString(),
+            chunk: this.outboundChunkNumber.toString(),  // Chunk should be stream-specific
+            payload: base64Payload,
+            track: "outbound"
+          },
+          sequence_number: this.outboundSequenceNumber.toString() // Ensures uniqueness across messages
+        };
+  
+        // Send message via WebSocket.
+        this.websocketService.sendMessage(JSON.stringify(outboundMessage));
       };
-
+  
       console.log('Outbound microphone capture started.');
     } catch (err) {
       console.error('Error capturing outbound mic audio:', err);
     }
   }
+  
+
   async hangUp(call_control_id: string): Promise<void> {
     try {
       await this.http.post(`${this.backendApi}/calls/${call_control_id}/actions/hangup`, {}).toPromise();
@@ -335,6 +384,27 @@ export class TelnyxService {
     } catch (err) {
       console.error('Error capturing microphone:', err);
       throw err;
+    }
+  }
+
+  async startCallRecording(callControlId: string) {
+    const requestBody = {
+      format: "mp3",
+      channels: "dual",
+      play_beep: true,
+      max_length: 0,
+      timeout_secs: 0,
+    };
+
+    try {
+      // Use firstValueFrom to convert the observable to a promise.
+      const response = await firstValueFrom(
+        this.http.post(`${this.backendApi}/calls/${callControlId}/actions/record_start`, requestBody)
+      );
+      console.log("Recording started successfully:", response);
+    } catch (error) {
+      console.error("Error starting call recording:", error);
+      throw error;
     }
   }
 }
