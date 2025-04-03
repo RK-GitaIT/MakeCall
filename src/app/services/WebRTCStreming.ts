@@ -13,12 +13,10 @@ export class WebRTCStreming {
   private remoteStreamDestination: MediaStreamAudioDestinationNode | null = null;
   private remoteStream: MediaStream | null = null;
 
-  // Expose observable messages.
   get message$(): Observable<any> {
     return this.messageSubject.asObservable();
   }
 
-  // Connect to the streaming WebSocket and initialize audio.
   connect(url: string): void {
     if (this.socket) {
       this.disconnect();
@@ -26,7 +24,6 @@ export class WebRTCStreming {
     console.log(`Connecting to WebSocket: ${url}`);
     this.socket = new WebSocket(url);
 
-    // Initialize AudioContext with our configured sample rate.
     this.audioCtx = new AudioContext({ sampleRate: VoiceConfig.audioContextSampleRate });
     this.remoteStreamDestination = this.audioCtx.createMediaStreamDestination();
     this.remoteStream = this.remoteStreamDestination.stream;
@@ -57,7 +54,6 @@ export class WebRTCStreming {
     };
   }
 
-  // Disconnect and clean up.
   disconnect(): void {
     if (this.socket) {
       if (this.socket.readyState === WebSocket.OPEN || this.socket.readyState === WebSocket.CONNECTING) {
@@ -76,17 +72,18 @@ export class WebRTCStreming {
     }
   }
 
-  // Check if connected.
   isConnected(): boolean {
     return this.socket !== null && this.socket.readyState === WebSocket.OPEN;
   }
 
-  // Return the remote MediaStream.
+  isConnectedTo(currenturl: string): boolean {
+    return this.socket !== null && this.socket.readyState === WebSocket.OPEN && this.socket.url === currenturl;
+  }
+
   getRemoteStream(): MediaStream | null {
     return this.remoteStream;
   }
 
-  // Send outbound audio or data via WebSocket.
   sendOutboundAudio(data: any): void {
     if (this.socket && this.socket.readyState === WebSocket.OPEN) {
       try {
@@ -99,55 +96,58 @@ export class WebRTCStreming {
     }
   }
 
-  // Handle incoming media events.
   private handleMediaEvent(data: any): void {
-    console.log('Received media event:', data);
+   // console.log('Received media event:', data);
     const { track, payload } = data.media;
     if (track === 'inbound') {
       this.processInboundAudio(payload);
     }
   }
 
-  // In WebRTCStreming (inbound audio processing)
-private async processInboundAudio(payload: string): Promise<void> {
-  if (!this.audioCtx || !this.remoteStreamDestination) {
-    console.warn('Audio context or destination not initialized.');
-    return;
+  private async processInboundAudio(payload: string): Promise<void> {
+    if (!this.audioCtx || !this.remoteStreamDestination) {
+      console.warn('Audio context or destination not initialized.');
+      return;
+    }
+
+    if (this.audioCtx.state === 'suspended') {
+      await this.audioCtx.resume();
+    }
+
+    try {
+      const arrayBuffer = OPUSUtils.base64ToArrayBuffer(payload);
+      const pcmData = OPUSUtils.decode(arrayBuffer); // Ensure OPUSUtils.decode() returns Float32Array
+
+      if (!(pcmData instanceof Float32Array)) {
+        console.error('Decoded audio data is not a Float32Array.');
+        return;
+      }
+
+      const audioBuffer = this.audioCtx.createBuffer(1, pcmData.length, VoiceConfig.intendedSampleRate);
+      audioBuffer.copyToChannel(pcmData, 0);
+
+      const source = this.audioCtx.createBufferSource();
+      source.buffer = audioBuffer;
+
+      const bandpassFilter = this.audioCtx.createBiquadFilter();
+      bandpassFilter.type = 'bandpass';
+      bandpassFilter.frequency.value = 1000;
+      bandpassFilter.Q.value = 1;
+
+      const compressor = this.audioCtx.createDynamicsCompressor();
+      compressor.threshold.value = -50;
+      compressor.knee.value = 40;
+      compressor.ratio.value = 12;
+      compressor.attack.value = 0;
+      compressor.release.value = 0.25;
+
+      source.connect(bandpassFilter);
+      bandpassFilter.connect(compressor);
+      compressor.connect(this.remoteStreamDestination);
+
+      source.start();
+    } catch (error) {
+      console.error('Error processing inbound audio:', error);
+    }
   }
-  // Ensure the AudioContext is active.
-  if (this.audioCtx.state === 'suspended') {
-    await this.audioCtx.resume();
-  }
-  // Decode the base64 payload.
-  const arrayBuffer = OPUSUtils.base64ToArrayBuffer(payload);
-  const pcmData = OPUSUtils.decode(arrayBuffer);
-  // Create an AudioBuffer using the intended sample rate.
-  const audioBuffer = this.audioCtx.createBuffer(1, pcmData.length, VoiceConfig.intendedSampleRate);
-  audioBuffer.copyToChannel(pcmData, 0);
-
-  const source = this.audioCtx.createBufferSource();
-  source.buffer = audioBuffer;
-
-  // Create a bandpass filter node to pass frequencies typical for voice.
-  const bandpassFilter = this.audioCtx.createBiquadFilter();
-  bandpassFilter.type = 'bandpass';
-  bandpassFilter.frequency.value = 1000; // center frequency (adjust as needed)
-  bandpassFilter.Q.value = 1; // quality factor (adjust for bandwidth)
-
-  // Optionally, add a dynamics compressor to further reduce background noise.
-  const compressor = this.audioCtx.createDynamicsCompressor();
-  compressor.threshold.value = -50; // in dB (adjust as needed)
-  compressor.knee.value = 40;
-  compressor.ratio.value = 12;
-  compressor.attack.value = 0;
-  compressor.release.value = 0.25;
-
-  // Connect nodes: source -> filter -> compressor -> remote stream destination.
-  source.connect(bandpassFilter);
-  bandpassFilter.connect(compressor);
-  compressor.connect(this.remoteStreamDestination);
-
-  source.start();
-}
-
 }

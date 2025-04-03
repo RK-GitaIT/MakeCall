@@ -92,12 +92,17 @@ export class DialpadComponent implements OnInit, OnDestroy {
       if (audioElement) {
         this.telnyxService.setupAudioStream(audioElement);
       }
+  
+      // Await mic start before making the call
+      await this.startMic();  
+  
       const response = await this.telnyxService.makeCall(
         this.to,
         this.from,
         this.selectedProfile.id,
         this.message
       );
+  
       if (response?.call_control_id) {
         this.currentCallControlId = response.call_control_id;
         this.startCallTimer();
@@ -108,6 +113,7 @@ export class DialpadComponent implements OnInit, OnDestroy {
       console.error('Error initiating call:', error);
     }
   }
+  
 
   validateKey(event: KeyboardEvent) {
     const allowedChars = /^[\d\+]+$/;
@@ -138,6 +144,10 @@ export class DialpadComponent implements OnInit, OnDestroy {
     } else {
       console.warn('Missing call control information for hangup.');
     }
+  
+    // Stop the microphone stream
+    this.stopMic();
+  
     this.isCallStatus = false;
     clearInterval(this.timerInterval);
     this.callDuration = '00:00';
@@ -145,6 +155,7 @@ export class DialpadComponent implements OnInit, OnDestroy {
     console.log('Call ended');
     this.closeModal();
   }
+  
 
   async startMic() {
     try {
@@ -154,11 +165,21 @@ export class DialpadComponent implements OnInit, OnDestroy {
         if (micAudio) {
           micAudio.srcObject = micStream;
           micAudio.controls = true;
-          micAudio.play().catch(err => console.error('Error playing mic stream:', err));
         }
       }
     } catch (err) {
       console.error('Error starting mic:', err);
     }
   }
+
+  stopMic() {
+    const micAudio = document.getElementById('mic_audio') as HTMLAudioElement;
+    if (micAudio && micAudio.srcObject) {
+      const stream = micAudio.srcObject as MediaStream;
+      const tracks = stream.getTracks();
+      tracks.forEach(track => track.stop()); // Stop all tracks
+      micAudio.srcObject = null; // Release stream
+    }
+  }
+  
 }
