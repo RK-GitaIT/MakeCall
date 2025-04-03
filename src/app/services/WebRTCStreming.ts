@@ -101,7 +101,7 @@ export class WebRTCStreming {
 
   // Handle incoming media events.
   private handleMediaEvent(data: any): void {
-    console.log('Received media event:', data);
+   // console.log('Received media event:', data);
     const { track, payload } = data.media;
     if (track === 'inbound') {
       this.processInboundAudio(payload);

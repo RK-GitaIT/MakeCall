@@ -123,10 +123,17 @@ export class TelnyxService {
         this.endCall();
         break;
       case 'streaming.started':
-        console.log("Streaming started for call:", payload.call_control_id);
+        if (this.currentCall && this.currentCall.call_control_id === payload.call_control_id) {
+          if (payload.stream_params.stream_track === 'inbound') { 
+            this.currentCall.inbound_stream_id = payload.stream_id!;
+          } else if (payload.stream_params.stream_track === 'outbound') { 
+            this.currentCall.outbound_stream_id = payload.stream_id!;
+         }
+        }
+        console.log("Streaming started for call:", payload);
         break;
       case 'streaming.stopped':
-        console.log("Streaming stopped for call:", payload.call_control_id);
+        console.log("Streaming stopped for call:", payload);
         break;
       case 'call.speak.ended':
         this.currentCallMessage = '';
@@ -138,6 +145,7 @@ export class TelnyxService {
   }
 
   private handleCallAnswered(payload: any) {
+    console.log("Call answered:", payload);
     this.callStatus$.next({ status: 'Call Answered', type: 'success' });
     // Start streaming WebSocket if not connected.
     if (!this._webRTCStreming.isConnected()) {
@@ -150,6 +158,7 @@ export class TelnyxService {
       call_leg_id: payload.call_leg_id
     };
     this.inboundStreamingStart(payload.call_control_id, payload.client_state, payload.command_id);
+    this.outboundStreamingStart(payload.call_control_id, payload.client_state, payload.command_id);
     this.startCallRecording(payload.call_control_id).catch(err => console.error('Error starting call recording:', err));
     setTimeout(() => this.hangUp(payload.call_control_id), 120000);
   }
@@ -276,7 +285,7 @@ export class TelnyxService {
   
         // Construct the outbound message.
         const outboundMessage = {
-          stream_id: this.currentCall?.call_control_id,
+          stream_id: this.currentCall?.outbound_stream_id,
           event: "media",
           media: {
             timestamp: Date.now().toString(),
