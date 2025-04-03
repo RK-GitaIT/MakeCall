@@ -4,7 +4,7 @@ import { HttpClient } from '@angular/common/http';
 import { WebsocketService } from '../websocket/websoket.service';
 import { WebRTCStreming } from '../WebRTCStreming';
 import { VoiceConfig } from '../VoiceConfig';
-import { OPUSUtils } from '../OPUSUtils';
+import { Utils } from '../Utils';
 
 export interface CallStatus {
   status: string;
@@ -88,8 +88,8 @@ export class TelnyxService {
         stream_url: this.wsUrl_S,  
         stream_track: "both_tracks",
         stream_bidirectional_mode: "rtp",
-        stream_bidirectional_codec: "OPUS",
-        stream_bidirectional_target_legs: "both",
+        stream_bidirectional_codec: "PCMU",
+       // stream_bidirectional_target_legs: "both",
         stream_bidirectional_sampling_rate: VoiceConfig.outboundMic.sampleRate,
         send_silence_when_idle: true,
       };
@@ -168,8 +168,8 @@ export class TelnyxService {
       this.audioCtx = new AudioContext();
     }
     try {
-      const pcmData = OPUSUtils.decode(OPUSUtils.base64ToArrayBuffer(base64Data));
-      const audioBuffer = this.audioCtx.createBuffer(1, pcmData.length, 8500);
+      const pcmData = Utils.decode(Utils.base64ToArrayBuffer(base64Data));
+      const audioBuffer = this.audioCtx.createBuffer(1, pcmData.length, 8000);
       audioBuffer.getChannelData(0).set(pcmData);
       this.audioQueue.push(audioBuffer);
       this.playAudioQueue();
@@ -202,26 +202,24 @@ export class TelnyxService {
           autoGainControl: VoiceConfig.outboundMic.autoGainControl
         }
       });
-      // Use a dedicated AudioContext for outbound audio.
+
       const audioContext = new AudioContext({ sampleRate: VoiceConfig.outboundMic.sampleRate });
       const source = audioContext.createMediaStreamSource(micStream);
-      const processor = audioContext.createScriptProcessor(VoiceConfig.outboundMic.bufferSize, 1, 1);
+      const processor = audioContext.createScriptProcessor(160, 1, 1);
+
       source.connect(processor);
-      processor.connect(audioContext.destination); // Optional: local monitoring.
+      processor.connect(audioContext.destination);
 
       processor.onaudioprocess = (event) => {
         const inputData = event.inputBuffer.getChannelData(0);
-        // Normalize the audio to avoid distortion.
-      //  const normalizedData = this.normalizeAudio(inputData);
-       // const encoded = OPUSUtils.encode(normalizedData);
-       // const base64Payload = OPUSUtils.arrayBufferToBase64(encoded.buffer);
-        // Send outbound audio via the streaming WebSocket.
+        const normalizedData = this.normalizeAudio(inputData);
+        
+        // Send the audio data to WebRTC streaming service
         this._webRTCStreming.sendOutboundAudio({
           event: "media",
           media: {
             track: "outbound",
-            payload: inputData.buffer, // Use the raw OPUS data directly.
-           // payload: base64Payload
+            payload: normalizedData
           }
         });
       };
@@ -231,6 +229,28 @@ export class TelnyxService {
       console.error('Error capturing outbound mic audio:', err);
     }
   }
+
+  private normalizeAudio(input: Float32Array): Float32Array {
+    const output = new Float32Array(input.length);
+    let sum = 0;
+    
+    // Calculate RMS
+    for (let i = 0; i < input.length; i++) {
+      sum += input[i] * input[i];
+    }
+    const rms = Math.sqrt(sum / input.length);
+    
+    // Apply gain based on RMS
+    const gain = rms > 0 ? 0.8 / rms : 1;
+    
+    // Apply gain and clip to [-1, 1]
+    for (let i = 0; i < input.length; i++) {
+      output[i] = Math.max(-1, Math.min(1, input[i] * gain));
+    }
+    
+    return output;
+  }
+
   async hangUp(call_control_id: string): Promise<void> {
     try {
       await this.http.post(`${this.backendApi}/calls/${call_control_id}/actions/hangup`, {}).toPromise();
@@ -242,21 +262,6 @@ export class TelnyxService {
       this.handleCallError(error);
     }
   }
-
-  private normalizeAudio(input: Float32Array): Float32Array {
-    const output = new Float32Array(input.length);
-    let sum = 0;
-    for (let i = 0; i < input.length; i++) {
-      sum += input[i] * input[i];
-    }
-    const rms = Math.sqrt(sum / input.length);
-    const gain = rms > 0 ? 0.8 / rms : 1;
-    for (let i = 0; i < input.length; i++) {
-      output[i] = input[i] * gain;
-    }
-    return output;
-  }
-
 
   // Cleanup audio: close AudioContext and reset state.
   private cleanupAudio() {
