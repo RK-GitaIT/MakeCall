@@ -108,28 +108,46 @@ export class WebRTCStreming {
     }
   }
 
-  // Process inbound audio payload.
-  private async processInboundAudio(payload: string): Promise<void> {
-    if (!this.audioCtx || !this.remoteStreamDestination) {
-      console.warn('Audio context or destination not initialized.');
-      return;
-    }
-    // Ensure the AudioContext is active.
-    if (this.audioCtx.state === 'suspended') {
-      await this.audioCtx.resume();
-    }
-    // Decode the base64 payload.
-    const arrayBuffer = OPUSUtils.base64ToArrayBuffer(payload);
-    const pcmData = OPUSUtils.decode(arrayBuffer);
-    // Create an AudioBuffer using the intended sample rate.
-    const audioBuffer = this.audioCtx.createBuffer(1, pcmData.length, VoiceConfig.intendedSampleRate);
-    audioBuffer.copyToChannel(pcmData, 0);
-
-    const source = this.audioCtx.createBufferSource();
-    source.buffer = audioBuffer;
-    // Adjust playback rate automatically.
-    source.playbackRate.value = VoiceConfig.getPlaybackRateAdjustment(this.audioCtx.sampleRate);
-    source.connect(this.remoteStreamDestination);
-    source.start();
+  // In WebRTCStreming (inbound audio processing)
+private async processInboundAudio(payload: string): Promise<void> {
+  if (!this.audioCtx || !this.remoteStreamDestination) {
+    console.warn('Audio context or destination not initialized.');
+    return;
   }
+  // Ensure the AudioContext is active.
+  if (this.audioCtx.state === 'suspended') {
+    await this.audioCtx.resume();
+  }
+  // Decode the base64 payload.
+  const arrayBuffer = OPUSUtils.base64ToArrayBuffer(payload);
+  const pcmData = OPUSUtils.decode(arrayBuffer);
+  // Create an AudioBuffer using the intended sample rate.
+  const audioBuffer = this.audioCtx.createBuffer(1, pcmData.length, VoiceConfig.intendedSampleRate);
+  audioBuffer.copyToChannel(pcmData, 0);
+
+  const source = this.audioCtx.createBufferSource();
+  source.buffer = audioBuffer;
+
+  // Create a bandpass filter node to pass frequencies typical for voice.
+  const bandpassFilter = this.audioCtx.createBiquadFilter();
+  bandpassFilter.type = 'bandpass';
+  bandpassFilter.frequency.value = 1000; // center frequency (adjust as needed)
+  bandpassFilter.Q.value = 1; // quality factor (adjust for bandwidth)
+
+  // Optionally, add a dynamics compressor to further reduce background noise.
+  const compressor = this.audioCtx.createDynamicsCompressor();
+  compressor.threshold.value = -50; // in dB (adjust as needed)
+  compressor.knee.value = 40;
+  compressor.ratio.value = 12;
+  compressor.attack.value = 0;
+  compressor.release.value = 0.25;
+
+  // Connect nodes: source -> filter -> compressor -> remote stream destination.
+  source.connect(bandpassFilter);
+  bandpassFilter.connect(compressor);
+  compressor.connect(this.remoteStreamDestination);
+
+  source.start();
+}
+
 }
